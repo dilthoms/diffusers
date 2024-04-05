@@ -32,12 +32,14 @@ import transformers
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import DistributedDataParallelKwargs, ProjectConfiguration, set_seed
-from datasets import load_dataset
+from datasets import load_dataset, load_from_disk
 from huggingface_hub import create_repo, upload_folder
 from packaging import version
 from peft import LoraConfig, set_peft_model_state_dict
 from peft.utils import get_peft_model_state_dict
+import torchvision
 from torchvision import transforms
+from torchvision.utils import save_image
 from torchvision.transforms.functional import crop
 from tqdm.auto import tqdm
 from transformers import AutoTokenizer, PretrainedConfig
@@ -426,11 +428,21 @@ def parse_args(input_args=None):
         help=("The dimension of the LoRA update matrices."),
     )
 
+    parser.add_argument(
+            "--use_dora",
+            action="store_true",
+            default=False,
+            help=(
+                "Wether to train a DoRA as proposed in- DoRA: Weight-Decomposed Low-Rank Adaptation https://arxiv.org/abs/2402.09353. "
+                "Note: to use DoRA you need to install peft from main, `pip install git+https://github.com/huggingface/peft.git`"
+                ),
+    )
+
     if input_args is not None:
         args = parser.parse_args(input_args)
     else:
         args = parser.parse_args()
-
+    print(args)
     env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
     if env_local_rank != -1 and env_local_rank != args.local_rank:
         args.local_rank = env_local_rank
@@ -442,9 +454,7 @@ def parse_args(input_args=None):
     return args
 
 
-DATASET_NAME_MAPPING = {
-    "lambdalabs/pokemon-blip-captions": ("image", "text"),
-}
+DATASET_COLUMNS =  ("image", "text")
 
 
 def tokenize_prompt(tokenizer, prompt):
@@ -627,6 +637,7 @@ def main(args):
     # Set correct lora layers
     unet_lora_config = LoraConfig(
         r=args.rank,
+        use_dora=args.use_dora,
         lora_alpha=args.rank,
         init_lora_weights="gaussian",
         target_modules=["to_k", "to_q", "to_v", "to_out.0"],
@@ -639,6 +650,7 @@ def main(args):
         # ensure that dtype is float32, even if rest of the model that isn't trained is loaded in fp16
         text_lora_config = LoraConfig(
             r=args.rank,
+            use_dora=args.use_dora,
             lora_alpha=args.rank,
             init_lora_weights="gaussian",
             target_modules=["q_proj", "k_proj", "v_proj", "out_proj"],
@@ -796,6 +808,9 @@ def main(args):
         dataset = load_dataset(
             args.dataset_name, args.dataset_config_name, cache_dir=args.cache_dir, data_dir=args.train_data_dir
         )
+        #dataset = load_from_disk(
+        #    args.dataset_name
+        #)
     else:
         data_files = {}
         if args.train_data_dir is not None:
@@ -813,7 +828,7 @@ def main(args):
     column_names = dataset["train"].column_names
 
     # 6. Get the column names for input/target.
-    dataset_columns = DATASET_NAME_MAPPING.get(args.dataset_name, None)
+    dataset_columns = DATASET_COLUMNS
     if args.image_column is None:
         image_column = dataset_columns[0] if dataset_columns is not None else column_names[0]
     else:
@@ -1192,6 +1207,8 @@ def main(args):
                     if tracker.name == "tensorboard":
                         np_images = np.stack([np.asarray(img) for img in images])
                         tracker.writer.add_images("validation", np_images, epoch, dataformats="NHWC")
+                    for idx, img in enumerate(images):
+                        img.save(f"{args.output_dir}/{global_step}-{epoch}-{idx}.png")
                     if tracker.name == "wandb":
                         tracker.log(
                             {
