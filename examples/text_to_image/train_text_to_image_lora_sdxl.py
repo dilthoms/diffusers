@@ -818,12 +818,14 @@ def main(args):
     # download the dataset.
     if args.dataset_name is not None:
         # Downloading and loading a dataset from the hub.
-        dataset = load_dataset(
-            args.dataset_name, args.dataset_config_name, cache_dir=args.cache_dir, data_dir=args.train_data_dir
-        )
-        #dataset = load_from_disk(
-        #    args.dataset_name
-        #)
+        if not Path(args.dataset_name).exists():
+            dataset = load_dataset(
+                args.dataset_name, args.dataset_config_name, cache_dir=args.cache_dir, data_dir=args.train_data_dir
+            )
+        else:
+            dataset = load_from_disk(
+                args.dataset_name
+            )
     else:
         data_files = {}
         if args.train_data_dir is not None:
